@@ -1,0 +1,1494 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>華歌爾 智能排班管理系統</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- SheetJS for Excel Export -->
+  <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+  <!-- Phosphor Icons -->
+  <script src="https://unpkg.com/@phosphor-icons/web"></script>
+  <style>
+    body { font-family: 'Helvetica Neue', Arial, sans-serif; background-color: #f8fafc; }
+    
+    /* 捲軸美化 */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+    /* 拖曳相關樣式 */
+    .staff-card { cursor: grab; transition: transform 0.1s, box-shadow 0.1s; user-select: none; }
+    .staff-card:active { cursor: grabbing; transform: scale(0.98); }
+    .staff-card.dragging { opacity: 0.5; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
+    .dropzone { transition: background-color 0.2s, border-color 0.2s; min-height: 80px; }
+    .dropzone.dragover { background-color: #e2e8f0; border-color: #3b82f6; border-style: dashed; }
+    
+    /* 班別表格顏色 */
+    .shift-cell { transition: all 0.2s; user-select: none; cursor: pointer; }
+    .shift-cell:hover { filter: brightness(0.95); ring: 2px; ring-color: #93c5fd; }
+    .shift-A { background-color: #dbeafe; color: #1e3a8a; } /* 早班 */
+    .shift-P { background-color: #f3e8ff; color: #581c87; } /* 晚班 */
+    .shift-O { background-color: #ffedd5; color: #9a3412; font-weight: bold; } /* 全班 */
+    .shift-X { background-color: #fef08a; color: #854d0e; } /* 公休 */
+    .shift-Support { background-color: #dcfce7; color: #14532d; font-style: italic; } /* 代班 */
+    .shift-Leave { background-color: #fce7f3; color: #831843; } /* 特休 */
+    .shift-None { background-color: #ffffff; color: #94a3b8; }
+    
+    .table-container { max-height: calc(100vh - 250px); overflow: auto; }
+    th { position: sticky; top: 0; background-color: #f8fafc; z-index: 10; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+    th:first-child, td:first-child { position: sticky; left: 0; background-color: #ffffff; z-index: 11; box-shadow: 1px 0 2px rgba(0,0,0,0.1); }
+    th:first-child { z-index: 12; background-color: #f8fafc; }
+
+    /* 雙週加粗邊線 */
+    .border-biweekly { border-right: 3px solid #475569 !important; }
+    
+    /* 頁籤樣式 */
+    .tab-btn { padding: 0.5rem 1rem; font-weight: bold; border-bottom: 2px solid transparent; transition: all 0.2s; color: #64748b; }
+    .tab-btn.active { border-bottom-color: #3b82f6; color: #2563eb; }
+    .tab-btn:hover:not(.active) { color: #3b82f6; }
+  </style>
+</head>
+<body class="text-slate-800 h-screen flex flex-col overflow-hidden">
+
+  <nav class="bg-slate-900 text-white p-4 flex justify-between items-center shrink-0 shadow-md relative z-20">
+    <div class="flex items-center gap-3">
+      <i class="ph-fill ph-storefront text-2xl text-blue-400"></i>
+      <div class="flex items-center gap-2 text-sm font-medium" id="breadcrumbs"></div>
+    </div>
+    <div class="flex items-center gap-4">
+      <div id="month-picker-container" class="hidden items-center gap-2 bg-slate-800 px-3 py-1.5 rounded-lg border border-slate-700">
+        <i class="ph-fill ph-calendar-blank text-slate-400"></i>
+        <input type="month" id="global-month-picker" onchange="changeMonth(this.value)" class="bg-transparent text-white text-sm outline-none cursor-pointer">
+      </div>
+      <div id="nav-actions" class="flex gap-3"></div>
+    </div>
+  </nav>
+
+  <main class="flex-1 overflow-hidden relative">
+    
+    <!-- 1. 課區清單 -->
+    <div id="view-areas" class="h-full p-8 overflow-y-auto hidden">
+      <div class="max-w-5xl mx-auto flex flex-col gap-6">
+        <div class="flex justify-between items-center">
+          <h2 class="text-2xl font-bold text-slate-800">課區總覽</h2>
+          <div class="flex gap-3">
+            <button onclick="openSettingsModal()" class="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 transition-colors">
+              <i class="ph-bold ph-gear"></i> 全局雙週設定
+            </button>
+            <button onclick="openAreaModal()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 transition-colors">
+              <i class="ph-bold ph-plus"></i> 新增課區
+            </button>
+          </div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6" id="area-grid"></div>
+      </div>
+    </div>
+
+    <!-- 2. 課區儀表板 (五大模組) -->
+    <div id="view-dashboard" class="h-full p-8 overflow-y-auto hidden">
+      <div class="max-w-5xl mx-auto flex flex-col gap-6">
+        <h2 class="text-2xl font-bold text-slate-800" id="dashboard-title">管理中心</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          
+          <div onclick="navigateTo('groups')" class="bg-white p-6 rounded-xl shadow-sm border border-slate-200 hover:shadow-md hover:border-pink-400 cursor-pointer transition-all group">
+            <div class="w-12 h-12 rounded-lg bg-pink-100 text-pink-600 flex items-center justify-center text-2xl mb-4 group-hover:bg-pink-600 group-hover:text-white transition-colors"><i class="ph-fill ph-tree-structure"></i></div>
+            <h3 class="text-lg font-bold text-slate-800 mb-1">組別管理</h3>
+            <p class="text-sm text-slate-500">設定組長並歸屬人員與店家</p>
+          </div>
+
+          <div onclick="navigateTo('staff')" class="bg-white p-6 rounded-xl shadow-sm border border-slate-200 hover:shadow-md hover:border-blue-400 cursor-pointer transition-all group">
+            <div class="w-12 h-12 rounded-lg bg-blue-100 text-blue-600 flex items-center justify-center text-2xl mb-4 group-hover:bg-blue-600 group-hover:text-white transition-colors"><i class="ph-fill ph-users"></i></div>
+            <h3 class="text-lg font-bold text-slate-800 mb-1">人員看板</h3>
+            <p class="text-sm text-slate-500">管理員工建檔與出勤狀態</p>
+          </div>
+
+          <div onclick="navigateTo('stores')" class="bg-white p-6 rounded-xl shadow-sm border border-slate-200 hover:shadow-md hover:border-purple-400 cursor-pointer transition-all group">
+            <div class="w-12 h-12 rounded-lg bg-purple-100 text-purple-600 flex items-center justify-center text-2xl mb-4 group-hover:bg-purple-600 group-hover:text-white transition-colors"><i class="ph-fill ph-storefront"></i></div>
+            <h3 class="text-lg font-bold text-slate-800 mb-1">店家看板</h3>
+            <p class="text-sm text-slate-500">設定店點營業資訊與派員</p>
+          </div>
+
+          <div onclick="navigateTo('assign')" class="bg-white p-6 rounded-xl shadow-sm border border-slate-200 hover:shadow-md hover:border-orange-400 cursor-pointer transition-all group">
+            <div class="w-12 h-12 rounded-lg bg-orange-100 text-orange-600 flex items-center justify-center text-2xl mb-4 group-hover:bg-orange-600 group-hover:text-white transition-colors"><i class="ph-fill ph-kanban"></i></div>
+            <h3 class="text-lg font-bold text-slate-800 mb-1">分派看板</h3>
+            <p class="text-sm text-slate-500">拖曳分配人員至各店點陣地</p>
+          </div>
+
+          <div onclick="navigateTo('schedule')" class="bg-white p-6 rounded-xl shadow-sm border border-slate-200 hover:shadow-md hover:border-emerald-400 cursor-pointer transition-all group">
+            <div class="w-12 h-12 rounded-lg bg-emerald-100 text-emerald-600 flex items-center justify-center text-2xl mb-4 group-hover:bg-emerald-600 group-hover:text-white transition-colors"><i class="ph-fill ph-calendar-grid"></i></div>
+            <h3 class="text-lg font-bold text-slate-800 mb-1">排班結果</h3>
+            <p class="text-sm text-slate-500">四維度檢視與微調排班草稿</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2.5 組別管理 -->
+    <div id="view-groups" class="h-full p-6 overflow-y-auto hidden flex-col gap-4 bg-slate-50">
+      <div class="flex justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+        <h2 class="text-lg font-bold text-slate-700">組別列表</h2>
+        <button onclick="openGroupModal()" class="bg-pink-600 hover:bg-pink-700 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2"><i class="ph-bold ph-plus"></i> 新增組別</button>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 content-start" id="group-grid"></div>
+    </div>
+
+    <!-- 3. 人員看板 -->
+    <div id="view-staff" class="h-full flex flex-col bg-slate-50 hidden">
+      <div class="bg-white px-6 pt-3 flex gap-4 border-b shrink-0">
+        <button class="tab-btn active" onclick="setTab('staff', 'list', this)">人員列表</button>
+        <button class="tab-btn" onclick="setTab('staff', 'preview', this)">分組預覽</button>
+      </div>
+      <div class="p-6 overflow-y-auto flex-1">
+        <div id="staff-content"></div>
+      </div>
+    </div>
+
+    <!-- 4. 店家看板 -->
+    <div id="view-stores" class="h-full flex flex-col bg-slate-50 hidden">
+      <div class="bg-white px-6 pt-3 flex gap-4 border-b shrink-0">
+        <button class="tab-btn active" onclick="setTab('store', 'list', this)">店家列表</button>
+        <button class="tab-btn" onclick="setTab('store', 'preview', this)">分組預覽</button>
+      </div>
+      <div class="p-6 overflow-y-auto flex-1">
+        <div id="store-content"></div>
+      </div>
+    </div>
+
+    <!-- 5. 分派看板 (Drag & Drop) -->
+    <div id="view-assign" class="h-full flex flex-col bg-slate-100 hidden">
+      <div class="bg-white border-b px-6 py-3 flex justify-between items-center shrink-0">
+        <div class="text-slate-600 font-medium">從左側「人員庫」拖曳至右側「店家」。<span class="text-blue-600 font-bold">可重複拖曳分派多店</span>。排首位者為【主負責】。</div>
+        <button onclick="runAutoSchedule()" class="flex items-center gap-2 bg-gradient-to-r from-orange-500 to-red-500 hover:from-orange-400 hover:to-red-400 text-white px-6 py-2 rounded-lg font-bold shadow-md transition-all transform hover:scale-105">
+          <i class="ph-fill ph-magic-wand text-lg"></i> 產生自動排班
+        </button>
+      </div>
+      <div class="flex flex-1 overflow-hidden p-4 gap-4">
+        <div class="w-72 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden shrink-0">
+          <div class="bg-slate-800 text-white p-3 font-bold flex justify-between items-center">
+            <span>人員庫 (可重複拖曳)</span>
+            <span id="unassigned-count" class="bg-slate-600 px-2 py-0.5 rounded-full text-xs">0</span>
+          </div>
+          <div class="flex-1 p-3 overflow-y-auto bg-slate-50 dropzone" id="pool-unassigned" ondragover="allowDrop(event)" ondrop="drop(event, 'pool')"></div>
+        </div>
+        <div class="flex-1 overflow-y-auto">
+          <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4" id="assign-stores-grid"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 6. 排班結果 -->
+    <div id="view-schedule" class="h-full flex flex-col bg-slate-50 hidden">
+      <div class="bg-white px-6 pt-3 flex gap-4 border-b shrink-0 flex-wrap">
+        <button class="tab-btn active" onclick="setTab('schedule', 'all', this)">全課角度</button>
+        <button class="tab-btn" onclick="setTab('schedule', 'leader', this)">組長角度</button>
+        <button class="tab-btn" onclick="setTab('schedule', 'store', this)">店家角度</button>
+        <button class="tab-btn" onclick="setTab('schedule', 'staff', this)">人員角度</button>
+      </div>
+      
+      <div class="p-4 flex-1 flex flex-col overflow-hidden">
+        <div class="bg-white rounded-xl shadow-sm border border-slate-200 h-full flex flex-col">
+          <div class="p-4 border-b flex justify-between items-center bg-slate-50 rounded-t-xl shrink-0 flex-wrap gap-2">
+            <div class="flex items-center gap-4">
+              <!-- 組長視角才顯示的下拉選單 -->
+              <select id="schedule-leader-filter" class="hidden bg-white border border-slate-300 rounded px-3 py-1 text-sm font-medium" onchange="renderScheduleTable()">
+                <option value="">選擇組別...</option>
+              </select>
+              
+              <div class="text-sm text-slate-500 flex gap-2 bg-white px-2 py-1 rounded border">
+                <span class="flex items-center gap-1"><div class="w-2.5 h-2.5 rounded bg-blue-200"></div> A</span>
+                <span class="flex items-center gap-1"><div class="w-2.5 h-2.5 rounded bg-purple-200"></div> P</span>
+                <span class="flex items-center gap-1"><div class="w-2.5 h-2.5 rounded bg-orange-200"></div> O</span>
+                <span class="flex items-center gap-1"><div class="w-2.5 h-2.5 rounded bg-yellow-200"></div> 休</span>
+              </div>
+              <span class="text-xs text-slate-500 bg-slate-100 px-2 py-1 rounded border border-slate-200">
+                <i class="ph-bold ph-info"></i> 雙週邊界以加粗灰線標示
+              </span>
+            </div>
+            <div class="flex gap-2">
+              <button onclick="clearSchedule()" class="text-red-500 hover:text-red-700 text-sm font-medium transition-colors border border-red-200 px-3 py-1 rounded">清除重排</button>
+              <button onclick="exportExcel()" class="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1 rounded text-sm font-bold transition-colors flex items-center gap-1">
+                <i class="ph-bold ph-file-xls"></i> 匯出
+              </button>
+            </div>
+          </div>
+          <div class="table-container flex-1 p-2" id="schedule-content">
+            <!-- 依據角度動態產出 table -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  
+  <!-- Custom Alert -->
+  <div id="sys-alert" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm hidden items-center justify-center z-[100]">
+    <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden transform transition-all p-6 text-center scale-95 opacity-0" id="sys-alert-box">
+      <div class="w-16 h-16 bg-blue-100 text-blue-500 rounded-full flex items-center justify-center text-3xl mx-auto mb-4" id="sys-alert-icon"><i class="ph-fill ph-info"></i></div>
+      <h3 class="font-bold text-lg text-slate-800 mb-2" id="sys-alert-title">提示</h3>
+      <p class="text-sm text-slate-500 mb-6" id="sys-alert-msg"></p>
+      <button onclick="closeSysAlert()" class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold w-full shadow-md">確定</button>
+    </div>
+  </div>
+
+  <!-- Custom Confirm -->
+  <div id="sys-confirm" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm hidden items-center justify-center z-[100]">
+    <div class="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all p-6 text-center scale-95 opacity-0" id="sys-confirm-box">
+      <div class="w-16 h-16 bg-red-100 text-red-500 rounded-full flex items-center justify-center text-3xl mx-auto mb-4"><i class="ph-fill ph-warning"></i></div>
+      <h3 class="font-bold text-lg text-slate-800 mb-2" id="sys-confirm-title">確認操作</h3>
+      <p class="text-sm text-slate-500 mb-6 whitespace-pre-line" id="sys-confirm-msg"></p>
+      <div class="flex justify-center gap-3">
+        <button onclick="closeSysConfirm(false)" class="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg font-medium w-full">取消</button>
+        <button onclick="closeSysConfirm(true)" class="px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg font-bold w-full shadow-md">確認執行</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 課區表單 Modal -->
+  <div id="modal-area" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm hidden items-center justify-center z-50">
+    <div class="bg-white rounded-xl shadow-xl w-full max-w-sm overflow-hidden transform transition-all">
+      <div class="bg-slate-800 text-white px-6 py-4 flex justify-between items-center">
+        <h3 class="font-bold text-lg">新增課區</h3>
+        <button onclick="closeModal('modal-area')" class="text-slate-400 hover:text-white"><i class="ph-bold ph-x"></i></button>
+      </div>
+      <div class="p-6">
+        <label class="block text-sm font-medium text-slate-700 mb-1">課區名稱</label>
+        <input type="text" id="area-form-name" class="w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="例如: 桃園課">
+      </div>
+      <div class="bg-slate-50 px-6 py-4 flex justify-end gap-3 border-t">
+        <button onclick="closeModal('modal-area')" class="px-4 py-2 text-slate-600 hover:bg-slate-200 rounded-lg font-medium">取消</button>
+        <button onclick="saveArea()" class="px-4 py-2 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700">新增</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 雙週設定 Modal -->
+  <div id="modal-settings" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm hidden items-center justify-center z-50">
+    <div class="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden transform transition-all">
+      <div class="bg-slate-800 text-white px-6 py-4 flex justify-between items-center">
+        <h3 class="font-bold text-lg"><i class="ph-bold ph-gear"></i> 全局雙週週期設定</h3>
+        <button onclick="closeModal('modal-settings')" class="text-slate-400 hover:text-white"><i class="ph-bold ph-x"></i></button>
+      </div>
+      <div class="p-6 flex flex-col gap-4">
+        <div>
+          <label class="block text-sm font-bold text-slate-700 mb-1">雙週基準日 (Anchor Date)</label>
+          <p class="text-xs text-slate-500 mb-2">排班系統將以此日期作為第一個雙週週期的起始日，自動往前後推算全年 14 天區間。</p>
+          <input type="date" id="settings-anchor" class="w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" onchange="updateSettingsPreview()">
+        </div>
+        <div class="bg-slate-50 p-4 rounded-lg border border-slate-200 mt-2">
+          <div class="flex justify-between items-center mb-2">
+            <span class="text-sm font-bold text-slate-700">週期預覽</span>
+            <input type="month" id="settings-preview-month" class="text-xs border border-slate-300 rounded px-2 py-1" onchange="updateSettingsPreview()">
+          </div>
+          <ul id="settings-preview-list" class="text-sm text-slate-600 space-y-1 font-mono"></ul>
+        </div>
+      </div>
+      <div class="bg-slate-50 px-6 py-4 flex justify-end gap-3 border-t">
+        <button onclick="closeModal('modal-settings')" class="px-4 py-2 text-slate-600 hover:bg-slate-200 rounded-lg font-medium">取消</button>
+        <button onclick="saveSettings()" class="px-4 py-2 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700">儲存變更</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 組別表單 Modal -->
+  <div id="modal-group" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm hidden items-center justify-center z-50">
+    <div class="bg-white rounded-xl shadow-xl w-full max-w-2xl overflow-hidden transform transition-all h-[80vh] flex flex-col">
+      <div class="bg-pink-800 text-white px-6 py-4 flex justify-between items-center shrink-0">
+        <h3 class="font-bold text-lg" id="modal-group-title">管理組別</h3>
+        <button onclick="closeModal('modal-group')" class="text-pink-200 hover:text-white"><i class="ph-bold ph-x"></i></button>
+      </div>
+      <div class="p-6 overflow-y-auto flex-1 grid grid-cols-2 gap-6">
+        <input type="hidden" id="group-form-id">
+        <div class="col-span-2 sm:col-span-1">
+          <label class="block text-sm font-medium text-slate-700 mb-1">組別名稱</label>
+          <input type="text" id="group-form-name" class="w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-pink-500" placeholder="例如: 貞文組">
+        </div>
+        <div class="col-span-2 sm:col-span-1">
+          <label class="block text-sm font-medium text-slate-700 mb-1">選擇組長</label>
+          <select id="group-form-leader" class="w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-pink-500">
+            <!-- 動態填入 role='組長' 的人 -->
+          </select>
+        </div>
+        <div class="col-span-2 border-t pt-4">
+          <h4 class="font-bold text-slate-700 mb-3"><i class="ph-fill ph-users"></i> 歸屬員工 (請勾選)</h4>
+          <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-40 overflow-y-auto bg-slate-50 p-2 rounded border" id="group-form-staff-list"></div>
+        </div>
+        <div class="col-span-2 border-t pt-4">
+          <h4 class="font-bold text-slate-700 mb-3"><i class="ph-fill ph-storefront"></i> 歸屬店家 (請勾選)</h4>
+          <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-40 overflow-y-auto bg-slate-50 p-2 rounded border" id="group-form-store-list"></div>
+        </div>
+      </div>
+      <div class="bg-slate-50 px-6 py-4 flex justify-end gap-3 border-t shrink-0">
+        <button onclick="closeModal('modal-group')" class="px-4 py-2 text-slate-600 hover:bg-slate-200 rounded-lg font-medium">取消</button>
+        <button onclick="saveGroup()" class="px-4 py-2 bg-pink-600 text-white rounded-lg font-bold hover:bg-pink-700">儲存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 人員表單 Modal -->
+  <div id="modal-staff" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm hidden items-center justify-center z-50">
+    <div class="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden transform transition-all">
+      <div class="bg-blue-800 text-white px-6 py-4 flex justify-between items-center">
+        <h3 class="font-bold text-lg" id="modal-staff-title">新增人員</h3>
+        <button onclick="closeModal('modal-staff')" class="text-blue-200 hover:text-white"><i class="ph-bold ph-x"></i></button>
+      </div>
+      <div class="p-6 grid grid-cols-2 gap-4">
+        <input type="hidden" id="staff-form-id">
+        <div class="col-span-1">
+          <label class="block text-sm font-medium text-slate-700 mb-1">工號</label>
+          <input type="text" id="staff-form-empNo" class="w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="工號">
+        </div>
+        <div class="col-span-1">
+          <label class="block text-sm font-medium text-slate-700 mb-1">姓名</label>
+          <input type="text" id="staff-form-name" class="w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="姓名">
+        </div>
+        <div class="col-span-1">
+          <label class="block text-sm font-medium text-slate-700 mb-1">職務</label>
+          <select id="staff-form-role" class="w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <option value="員工">員工</option>
+            <option value="組長">組長</option>
+            <option value="機動">機動</option>
+          </select>
+        </div>
+        <div class="col-span-1">
+          <label class="block text-sm font-medium text-slate-700 mb-1">狀態</label>
+          <select id="staff-form-status" class="w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <option value="正常">正常</option>
+            <option value="病假">病假</option>
+            <option value="育嬰假">育嬰假</option>
+            <option value="外借">外借</option>
+            <option value="離職">離職</option>
+          </select>
+        </div>
+      </div>
+      <div class="bg-slate-50 px-6 py-4 flex justify-end gap-3 border-t">
+        <button onclick="closeModal('modal-staff')" class="px-4 py-2 text-slate-600 hover:bg-slate-200 rounded-lg font-medium">取消</button>
+        <button onclick="saveStaff()" class="px-4 py-2 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700">儲存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 店家表單 Modal -->
+  <div id="modal-store" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm hidden items-center justify-center z-50">
+    <div class="bg-white rounded-xl shadow-xl w-full max-w-lg overflow-hidden transform transition-all">
+      <div class="bg-purple-800 text-white px-6 py-4 flex justify-between items-center">
+        <h3 class="font-bold text-lg" id="modal-store-title">新增店家</h3>
+        <button onclick="closeModal('modal-store')" class="text-purple-200 hover:text-white"><i class="ph-bold ph-x"></i></button>
+      </div>
+      <div class="p-6 grid grid-cols-2 gap-4">
+        <input type="hidden" id="store-form-id">
+        <div class="col-span-1">
+          <label class="block text-sm font-medium text-slate-700 mb-1">店編</label>
+          <input type="text" id="store-form-no" class="w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-500">
+        </div>
+        <div class="col-span-1">
+          <label class="block text-sm font-medium text-slate-700 mb-1">店名</label>
+          <input type="text" id="store-form-name" class="w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-500">
+        </div>
+        <div class="col-span-1">
+          <label class="block text-sm font-medium text-slate-700 mb-1">品牌</label>
+          <select id="store-form-brand" class="w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-500">
+            <option value="FL">華歌爾 (FL)</option>
+            <option value="SV">莎薇 (SV)</option>
+            <option value="BT">嬪婷 (BT)</option>
+            <option value="SA">莎露 (SA)</option>
+            <option value="LA">金華歌爾 (LA)</option>
+            <option value="NW">華睡 (NW)</option>
+            <option value="UC">男性 (UC)</option>
+            <option value="MD">寶貝媽咪 (MD)</option>
+          </select>
+        </div>
+        <div class="col-span-1">
+          <label class="block text-sm font-medium text-slate-700 mb-1">通路類型</label>
+          <select id="store-form-channel" class="w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-500">
+            <option value="百貨">百貨</option><option value="專櫃">專櫃</option><option value="OUTLET">OUTLET</option>
+            <option value="量販">量販</option><option value="專門店">專門店</option><option value="直營店">直營店</option>
+          </select>
+        </div>
+        <div class="col-span-1">
+          <label class="block text-sm font-medium text-slate-700 mb-1">派員數</label>
+          <input type="number" step="0.5" id="store-form-alloc" class="w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-500">
+        </div>
+        <div class="col-span-1">
+          <label class="block text-sm font-medium text-slate-700 mb-1">營業時間</label>
+          <input type="text" id="store-form-hours" class="w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-500" placeholder="e.g. 11:00-21:30">
+        </div>
+        <div class="col-span-2">
+          <label class="block text-sm font-medium text-slate-700 mb-2">固定公休日 (可複選)</label>
+          <div class="flex flex-wrap gap-2">
+            <label class="flex items-center gap-1 bg-slate-100 px-3 py-1 rounded cursor-pointer border"><input type="checkbox" value="一" class="offday-cb text-purple-600"> 一</label>
+            <label class="flex items-center gap-1 bg-slate-100 px-3 py-1 rounded cursor-pointer border"><input type="checkbox" value="二" class="offday-cb text-purple-600"> 二</label>
+            <label class="flex items-center gap-1 bg-slate-100 px-3 py-1 rounded cursor-pointer border"><input type="checkbox" value="三" class="offday-cb text-purple-600"> 三</label>
+            <label class="flex items-center gap-1 bg-slate-100 px-3 py-1 rounded cursor-pointer border"><input type="checkbox" value="四" class="offday-cb text-purple-600"> 四</label>
+            <label class="flex items-center gap-1 bg-slate-100 px-3 py-1 rounded cursor-pointer border"><input type="checkbox" value="五" class="offday-cb text-purple-600"> 五</label>
+            <label class="flex items-center gap-1 bg-slate-100 px-3 py-1 rounded cursor-pointer border"><input type="checkbox" value="六" class="offday-cb text-purple-600"> 六</label>
+            <label class="flex items-center gap-1 bg-slate-100 px-3 py-1 rounded cursor-pointer border"><input type="checkbox" value="日" class="offday-cb text-purple-600"> 日</label>
+          </div>
+        </div>
+      </div>
+      <div class="bg-slate-50 px-6 py-4 flex justify-end gap-3 border-t">
+        <button onclick="closeModal('modal-store')" class="px-4 py-2 text-slate-600 hover:bg-slate-200 rounded-lg font-medium">取消</button>
+        <button onclick="saveStore()" class="px-4 py-2 bg-purple-600 text-white rounded-lg font-bold hover:bg-purple-700">儲存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 吐司提示 -->
+  <div id="toast" class="fixed bottom-5 right-5 bg-slate-800 text-white px-6 py-3 rounded-lg shadow-lg transform translate-y-20 opacity-0 transition-all duration-300 z-50 flex items-center gap-2">
+    <i class="ph-fill ph-info text-xl text-blue-400" id="toast-icon"></i>
+    <span id="toast-msg">操作成功</span>
+  </div>
+
+  <script>
+    // ----------------------------------------
+    // 1. 模擬資料庫與狀態 (V10.1 修復版)
+    // ----------------------------------------
+    const DB = {
+      globalSettings: {
+        biWeeklyAnchor: '2025-07-07' // 全局雙週基準日 (星期一)
+      },
+      areas: [
+        { id: 'area_1', name: '中壢課' }
+      ],
+      groups: [
+        { id: 'g1', name: '貞文組', leaderId: 's1', areaId: 'area_1' },
+        { id: 'g2', name: '秋玉組', leaderId: 's15', areaId: 'area_1' }
+      ],
+      staff: [
+        { id: 's1', empNo: '19310', name: '王貞文', role: '組長', status: '正常', areaId: 'area_1', groupId: 'g1' },
+        { id: 's2', empNo: '12383', name: '莊秋玉', role: '員工', status: '正常', areaId: 'area_1', groupId: 'g1' },
+        { id: 's3', empNo: '14781', name: '范淑滿', role: '員工', status: '正常', areaId: 'area_1', groupId: 'g1' },
+        { id: 's4', empNo: '19150', name: '劉俐慧', role: '員工', status: '正常', areaId: 'area_1', groupId: 'g1' },
+        { id: 's5', empNo: '19595', name: '許家語', role: '員工', status: '正常', areaId: 'area_1', groupId: 'g1' },
+        { id: 's6', empNo: '19785', name: '劉姿萱', role: '員工', status: '正常', areaId: 'area_1', groupId: 'g1' },
+        { id: 's7', empNo: '20436', name: '吳宜君', role: '員工', status: '正常', areaId: 'area_1', groupId: 'g1' },
+        { id: 's8', empNo: '20608', name: '麥蒨云', role: '機動', status: '正常', areaId: 'area_1', groupId: 'g1' },
+        { id: 's9', empNo: '20706', name: '黃怡潔', role: '員工', status: '正常', areaId: 'area_1', groupId: 'g1' },
+        { id: 's10', empNo: '20825', name: '孫心蘋', role: '員工', status: '正常', areaId: 'area_1', groupId: 'g1' },
+        { id: 's11', empNo: '11993', name: '鍾春美', role: '員工', status: '正常', areaId: 'area_1', groupId: 'g1' },
+        { id: 's12', empNo: '17761', name: '陳莉芬', role: '員工', status: '正常', areaId: 'area_1', groupId: 'g1' },
+        { id: 's13', empNo: '19642', name: '陳淑蓮', role: '員工', status: '正常', areaId: 'area_1', groupId: 'g1' },
+        { id: 's14', empNo: '13206', name: '謝宛珊', role: '機動', status: '正常', areaId: 'area_1', groupId: 'g1' },
+        { id: 's15', empNo: '12773', name: '廖秋玉', role: '組長', status: '正常', areaId: 'area_1', groupId: 'g2' },
+        { id: 's16', empNo: '11839', name: '廖玉蘭', role: '員工', status: '正常', areaId: 'area_1', groupId: 'g2' },
+        { id: 's17', empNo: '12126', name: '林淑婷', role: '員工', status: '正常', areaId: 'area_1', groupId: 'g2' },
+        { id: 's18', empNo: '13300', name: '羅碧月', role: '員工', status: '正常', areaId: 'area_1', groupId: 'g2' },
+        { id: 's19', empNo: '18979', name: '柯佩吟', role: '員工', status: '正常', areaId: 'area_1', groupId: 'g2' },
+        { id: 's20', empNo: '19961', name: '侯俊芳', role: '員工', status: '正常', areaId: 'area_1', groupId: 'g2' },
+        { id: 's21', empNo: '20060', name: '吳晨華', role: '員工', status: '正常', areaId: 'area_1', groupId: 'g2' },
+        { id: 's22', empNo: '20724', name: '劉春華', role: '員工', status: '正常', areaId: 'area_1', groupId: 'g2' },
+        { id: 's23', empNo: '13454', name: '彭毓茹', role: '員工', status: '正常', areaId: 'area_1', groupId: 'g2' },
+        { id: 's24', empNo: '18691', name: '李沛儀', role: '員工', status: '正常', areaId: 'area_1', groupId: 'g2' },
+        { id: 's25', empNo: '19155', name: '吳淑玲', role: '機動', status: '正常', areaId: 'area_1', groupId: 'g2' },
+        { id: 's26', empNo: '20272', name: '簡婉琪', role: '員工', status: '正常', areaId: 'area_1', groupId: 'g2' },
+        { id: 's27', empNo: '20740', name: '陳渝蓉', role: '機動', status: '正常', areaId: 'area_1', groupId: 'g2' },
+        { id: 's28', empNo: '18751', name: '楊舒菁', role: '員工', status: '正常', areaId: 'area_1', groupId: 'g2' },
+        { id: 's29', empNo: '12854', name: '陳聖梅', role: '員工', status: '正常', areaId: 'area_1', groupId: 'g2' },
+        { id: 's30', empNo: '17370', name: '范美姬', role: '員工', status: '正常', areaId: 'area_1', groupId: 'g2' },
+        { id: 's31', empNo: '20679', name: '吳宛庭', role: '員工', status: '正常', areaId: 'area_1', groupId: 'g2' },
+        { id: 's32', empNo: '20749', name: '黃晴嫩', role: '機動', status: '正常', areaId: 'area_1', groupId: 'g2' }
+      ],
+      stores: [
+        { id: 'st1', storeNo: '300005L', name: 'SOGO華歌爾', brand: 'FL', channel: '百貨', hours: '11:00-21:30', target: '-', alloc: 3, offDays: [], areaId: 'area_1', groupId: 'g1' },
+        { id: 'st2', storeNo: '300018L', name: '大江華歌爾', brand: 'FL', channel: '百貨', hours: '10:30-21:30', target: '-', alloc: 3, offDays: [], areaId: 'area_1', groupId: 'g1' },
+        { id: 'st3', storeNo: '309005J', name: 'SOGO金華歌爾', brand: 'LA', channel: '百貨', hours: '11:00-21:30', target: '-', alloc: 2, offDays: [], areaId: 'area_1', groupId: 'g1' },
+        { id: 'st4', storeNo: '308005N', name: 'SOGO睡衣', brand: 'NW', channel: '百貨', hours: '10:30-21:30', target: '300,000', alloc: 1.5, offDays: [], areaId: 'area_1', groupId: 'g1' },
+        { id: 'st5', storeNo: '300051L', name: '融辰', brand: 'FL', channel: '專櫃', hours: '09:00-18:00', target: '-', alloc: 1, offDays: [], areaId: 'area_1', groupId: 'g1' },
+        { id: 'st6', storeNo: '300097L', name: '正大', brand: 'FL', channel: '專櫃', hours: '09:30-18:00', target: '-', alloc: 1, offDays: [], areaId: 'area_1', groupId: 'g1' },
+        { id: 'st7', storeNo: '300004L', name: '巴斯', brand: 'FL', channel: '專櫃', hours: '10:00-21:00', target: '-', alloc: 0.5, offDays: [], areaId: 'area_1', groupId: 'g1' },
+        
+        { id: 'st8', storeNo: '200023L', name: '琪麗', brand: 'FL', channel: '專櫃', hours: '10:00-21:00', target: '-', alloc: 1, offDays: [], areaId: 'area_1', groupId: 'g2' },
+        { id: 'st9', storeNo: '300056L', name: '依仕佳', brand: 'FL', channel: '專櫃', hours: '10:00-21:00', target: '-', alloc: 1, offDays: [], areaId: 'area_1', groupId: 'g2' },
+        { id: 'st10', storeNo: '300085L', name: '千姿', brand: 'FL', channel: '專櫃', hours: '10:00-21:00', target: '-', alloc: 0.5, offDays: [], areaId: 'area_1', groupId: 'g2' },
+        { id: 'st11', storeNo: '309037P', name: '華泰', brand: 'FL', channel: 'OUTLET', hours: '10:00-21:00', target: '-', alloc: 4, offDays: [], areaId: 'area_1', groupId: 'g2' },
+        { id: 'st12', storeNo: '309005A', name: 'SOGO莎薇', brand: 'SV', channel: '百貨', hours: '11:00-21:30', target: '-', alloc: 0, offDays: [], areaId: 'area_1', groupId: 'g2' },
+        { id: 'st13', storeNo: '309018A', name: '大江莎薇', brand: 'SV', channel: '百貨', hours: '11:00-21:30', target: '-', alloc: 1.5, offDays: [], areaId: 'area_1', groupId: 'g2' },
+        { id: 'st14', storeNo: '309745A', name: '平鎮大', brand: 'SV', channel: '量販店', hours: '10:00-21:00', target: '-', alloc: 1.5, offDays: [], areaId: 'area_1', groupId: 'g2' },
+        { id: 'st15', storeNo: '309005S', name: 'SOGO莎露', brand: 'SA', channel: '百貨', hours: '11:00-21:30', target: '-', alloc: 1.5, offDays: [], areaId: 'area_1', groupId: 'g2' },
+        { id: 'st16', storeNo: '309005B', name: 'SOGO嬪婷', brand: 'BT', channel: '百貨', hours: '11:00-21:30', target: '-', alloc: 2, offDays: [], areaId: 'area_1', groupId: 'g2' },
+        { id: 'st17', storeNo: '309018B', name: '大江嬪婷', brand: 'BT', channel: '百貨', hours: '11:00-21:30', target: '-', alloc: 2, offDays: [], areaId: 'area_1', groupId: 'g2' }
+      ],
+      // 預載 2026-06 測試分派資料，方便展示
+      assignments: {
+        '2026-06': {
+          'area_1': {
+            'st1': ['s2', 's3', 's4'], // SOGO華歌爾
+            'st2': ['s5', 's6', 's7'], // 大江華歌爾
+            'st3': ['s11', 's12'],     // SOGO金華歌爾
+            'st4': ['s13'],            // SOGO睡衣
+            'st5': ['s9'],             // 融辰
+            'st6': ['s10'],            // 正大
+            'st7': ['s8'],             // 巴斯
+            'st8': ['s29'],            // 琪麗
+            'st9': ['s30'],            // 依仕佳
+            'st10': ['s25'],           // 千姿
+            'st11': ['s16', 's17', 's18', 's19'], // 華泰
+            'st13': ['s24'],           // 大江莎薇
+            'st14': ['s26'],           // 平鎮大
+            'st15': ['s28'],           // SOGO莎露
+            'st16': ['s20', 's21'],    // SOGO嬪婷
+            'st17': ['s22', 's23']     // 大江嬪婷
+          }
+        }
+      }, 
+      schedules: {} 
+    };
+
+    let STATE = {
+      view: 'areas',
+      areaId: null,
+      draggedStaffId: null,
+      year: 2026,
+      month: 6,
+      daysInMonth: 30,
+      tabs: { staff: 'list', store: 'list', schedule: 'all' }
+    };
+
+    let confirmCallback = null;
+    function showAlert(title, msg) {
+      document.getElementById('sys-alert-title').innerText = title;
+      document.getElementById('sys-alert-msg').innerText = msg;
+      const box = document.getElementById('sys-alert-box');
+      document.getElementById('sys-alert').classList.remove('hidden');
+      document.getElementById('sys-alert').classList.add('flex');
+      setTimeout(() => { box.classList.remove('scale-95', 'opacity-0'); box.classList.add('scale-100', 'opacity-100'); }, 10);
+    }
+    function closeSysAlert() {
+      const box = document.getElementById('sys-alert-box');
+      box.classList.remove('scale-100', 'opacity-100'); box.classList.add('scale-95', 'opacity-0');
+      setTimeout(() => { document.getElementById('sys-alert').classList.add('hidden'); document.getElementById('sys-alert').classList.remove('flex'); }, 200);
+    }
+    function showConfirm(title, msg, onConfirm) {
+      document.getElementById('sys-confirm-title').innerText = title;
+      document.getElementById('sys-confirm-msg').innerText = msg;
+      confirmCallback = onConfirm;
+      const box = document.getElementById('sys-confirm-box');
+      document.getElementById('sys-confirm').classList.remove('hidden');
+      document.getElementById('sys-confirm').classList.add('flex');
+      setTimeout(() => { box.classList.remove('scale-95', 'opacity-0'); box.classList.add('scale-100', 'opacity-100'); }, 10);
+    }
+    function closeSysConfirm(result) {
+      const box = document.getElementById('sys-confirm-box');
+      box.classList.remove('scale-100', 'opacity-100'); box.classList.add('scale-95', 'opacity-0');
+      setTimeout(() => { 
+        document.getElementById('sys-confirm').classList.add('hidden'); document.getElementById('sys-confirm').classList.remove('flex'); 
+        if(result && confirmCallback) confirmCallback();
+      }, 200);
+    }
+    function showToast(msg, icon = "ph-info") {
+      const toast = document.getElementById('toast');
+      document.getElementById('toast-icon').className = `ph-fill ${icon} text-xl text-blue-400`;
+      document.getElementById('toast-msg').innerText = msg;
+      toast.classList.remove('translate-y-20', 'opacity-0');
+      setTimeout(() => toast.classList.add('translate-y-20', 'opacity-0'), 3000);
+    }
+
+    function getDayInCycle(y, m, d) {
+      const anchorStr = DB.globalSettings.biWeeklyAnchor; 
+      if (!anchorStr) return 0;
+      const [ay, am, ad] = anchorStr.split('-').map(Number);
+      const utcAnchor = Date.UTC(ay, am - 1, ad);
+      const utcCurr = Date.UTC(y, m - 1, d);
+      const diffDays = Math.floor((utcCurr - utcAnchor) / (1000 * 60 * 60 * 24));
+      return ((diffDays % 14) + 14) % 14; 
+    }
+
+    function openAreaModal() {
+        document.getElementById('area-form-name').value = '';
+        document.getElementById('modal-area').classList.remove('hidden');
+        document.getElementById('modal-area').classList.add('flex');
+    }
+    function saveArea() {
+        const name = document.getElementById('area-form-name').value.trim();
+        if(!name) return showAlert("提示", "課區名稱必填");
+        const newId = 'area_' + Date.now();
+        DB.areas.push({ id: newId, name: name });
+        closeModal('modal-area');
+        renderAreaList();
+        showToast("新增課區成功");
+    }
+
+    function openSettingsModal() {
+      document.getElementById('settings-anchor').value = DB.globalSettings.biWeeklyAnchor;
+      const pMonth = document.getElementById('settings-preview-month');
+      if (!pMonth.value) pMonth.value = `${STATE.year}-${String(STATE.month).padStart(2, '0')}`;
+      updateSettingsPreview();
+      document.getElementById('modal-settings').classList.remove('hidden');
+      document.getElementById('modal-settings').classList.add('flex');
+    }
+
+    function updateSettingsPreview() {
+      const anchorVal = document.getElementById('settings-anchor').value;
+      const pMonthVal = document.getElementById('settings-preview-month').value;
+      if (!anchorVal || !pMonthVal) return;
+      const [ay, am, ad] = anchorVal.split('-').map(Number);
+      const [py, pm] = pMonthVal.split('-').map(Number);
+      const anchorDate = new Date(ay, am - 1, ad);
+      const targetMonthStart = new Date(py, pm - 1, 1);
+      
+      const diffDays = Math.floor((targetMonthStart - anchorDate) / (1000 * 60 * 60 * 24));
+      const cycleOffset = Math.floor(diffDays / 14);
+      
+      let html = '';
+      for(let i = 0; i < 4; i++) {
+        const cycleStart = new Date(anchorDate);
+        cycleStart.setDate(cycleStart.getDate() + (cycleOffset + i) * 14);
+        const cycleEnd = new Date(cycleStart);
+        cycleEnd.setDate(cycleEnd.getDate() + 13);
+        const sStr = `${cycleStart.getMonth()+1}/${cycleStart.getDate()}`;
+        const eStr = `${cycleEnd.getMonth()+1}/${cycleEnd.getDate()}`;
+        const isTargetMonth = (cycleStart.getMonth() + 1 === pm || cycleEnd.getMonth() + 1 === pm);
+        const style = isTargetMonth ? 'text-blue-700 font-bold bg-blue-50 px-2 rounded' : 'text-slate-400';
+        html += `<li class="${style}">週期: ${sStr} ~ ${eStr}</li>`;
+      }
+      document.getElementById('settings-preview-list').innerHTML = html;
+    }
+
+    function saveSettings() {
+      const anchorVal = document.getElementById('settings-anchor').value;
+      if (!anchorVal) return showAlert('提示', '請選擇基準日');
+      DB.globalSettings.biWeeklyAnchor = anchorVal;
+      closeModal('modal-settings');
+      showToast("全局雙週基準日已更新！", "ph-check-circle");
+      if(STATE.view === 'schedule') renderScheduleTable();
+    }
+
+    function getMonthKey() { return `${STATE.year}-${String(STATE.month).padStart(2, '0')}`; }
+
+    function changeMonth(val) {
+      if(!val) return;
+      const [y, m] = val.split('-');
+      STATE.year = parseInt(y); STATE.month = parseInt(m);
+      if(STATE.areaId) {
+        initMonthData();
+        navigateTo(STATE.view);
+        showToast(`已切換至 ${STATE.year} 年 ${STATE.month} 月`, "ph-calendar-check");
+      }
+    }
+
+    function initMonthData() {
+      const mk = getMonthKey();
+      STATE.daysInMonth = new Date(STATE.year, STATE.month, 0).getDate();
+      if(!DB.assignments[mk]) DB.assignments[mk] = {};
+      if(!DB.schedules[mk]) DB.schedules[mk] = {};
+      if(STATE.areaId && !DB.assignments[mk][STATE.areaId]) {
+         DB.assignments[mk][STATE.areaId] = {}; 
+      }
+    }
+
+    function setTab(module, tabName, btnEl) {
+      STATE.tabs[module] = tabName;
+      const container = btnEl.parentElement;
+      container.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+      btnEl.classList.add('active');
+      
+      if(module === 'staff') renderStaffBoard();
+      else if(module === 'store') renderStoreBoard();
+      else if(module === 'schedule') {
+        const filterEl = document.getElementById('schedule-leader-filter');
+        if(tabName === 'leader') {
+          filterEl.classList.remove('hidden');
+          let opts = `<option value="">選擇組別...</option>`;
+          DB.groups.filter(g => g.areaId === STATE.areaId).forEach(g => { opts += `<option value="${g.id}">${g.name}</option>`; });
+          filterEl.innerHTML = opts;
+        } else {
+          filterEl.classList.add('hidden');
+        }
+        renderScheduleTable();
+      }
+    }
+
+    function navigateTo(view, params = {}) {
+      document.querySelectorAll('main > div').forEach(el => { el.classList.add('hidden'); el.classList.remove('flex'); });
+      STATE.view = view;
+      if (params.areaId) STATE.areaId = params.areaId;
+      const targetEl = document.getElementById(`view-${view}`);
+      if (targetEl) {
+        targetEl.classList.remove('hidden');
+        if(['groups', 'staff', 'stores', 'assign', 'schedule'].includes(view)) targetEl.classList.add('flex');
+      }
+      if(STATE.areaId && view !== 'areas') {
+        document.getElementById('month-picker-container').classList.remove('hidden');
+        document.getElementById('month-picker-container').classList.add('flex');
+        document.getElementById('global-month-picker').value = `${STATE.year}-${String(STATE.month).padStart(2, '0')}`;
+        initMonthData();
+      } else {
+        document.getElementById('month-picker-container').classList.add('hidden');
+        document.getElementById('month-picker-container').classList.remove('flex');
+      }
+      renderNavigation();
+
+      if (view === 'areas') renderAreaList();
+      else if (view === 'dashboard') renderDashboard();
+      else if (view === 'groups') renderGroupBoard();
+      else if (view === 'staff') renderStaffBoard();
+      else if (view === 'stores') renderStoreBoard();
+      else if (view === 'assign') renderAssignBoard();
+      else if (view === 'schedule') renderScheduleTable();
+    }
+
+    function renderNavigation() {
+      const breadcrumbs = document.getElementById('breadcrumbs');
+      const navActions = document.getElementById('nav-actions');
+      let html = `<a href="#" onclick="navigateTo('areas')" class="hover:text-blue-300 transition-colors"><i class="ph-bold ph-house"></i> 首頁</a>`;
+      let actionsHtml = '';
+
+      if (STATE.areaId && STATE.view !== 'areas') {
+        const area = DB.areas.find(a => a.id === STATE.areaId);
+        html += ` <span class="text-slate-500">/</span> <a href="#" onclick="navigateTo('dashboard')" class="hover:text-blue-300 transition-colors">${area.name}</a>`;
+        if(STATE.view !== 'dashboard') actionsHtml += `<button onclick="navigateTo('dashboard')" class="px-3 py-1.5 rounded border border-slate-600 hover:bg-slate-800 text-sm font-medium transition-colors"><i class="ph-bold ph-arrow-left"></i> 返回中心</button>`;
+        
+        if (STATE.view === 'staff') {
+          html += ` <span class="text-slate-500">/</span> <span class="text-blue-300">人員看板</span>`;
+          actionsHtml += `<button onclick="openStaffModal()" class="bg-blue-600 hover:bg-blue-500 px-4 py-1.5 rounded text-sm font-bold transition-colors"><i class="ph-bold ph-plus"></i> 新增人員</button>`;
+        } else if (STATE.view === 'stores') {
+          html += ` <span class="text-slate-500">/</span> <span class="text-purple-300">店家看板</span>`;
+          actionsHtml += `<button onclick="openStoreModal()" class="bg-purple-600 hover:bg-purple-500 px-4 py-1.5 rounded text-sm font-bold transition-colors"><i class="ph-bold ph-plus"></i> 新增店家</button>`;
+        } else if (STATE.view === 'groups') html += ` <span class="text-slate-500">/</span> <span class="text-pink-300">組別管理</span>`;
+        else if (STATE.view === 'assign') html += ` <span class="text-slate-500">/</span> <span class="text-orange-300">分派看板</span>`;
+        else if (STATE.view === 'schedule') html += ` <span class="text-slate-500">/</span> <span class="text-emerald-300">排班結果</span>`;
+      }
+      breadcrumbs.innerHTML = html;
+      navActions.innerHTML = actionsHtml;
+    }
+
+    function renderAreaList() {
+      document.getElementById('area-grid').innerHTML = DB.areas.map(area => `
+        <div onclick="navigateTo('dashboard', { areaId: '${area.id}' })" class="bg-white p-6 rounded-xl shadow-sm border border-slate-200 hover:shadow-md hover:border-blue-400 cursor-pointer transition-all group flex flex-col items-center justify-center text-center">
+          <div class="w-16 h-16 rounded-full bg-slate-100 flex items-center justify-center text-3xl mb-4 group-hover:bg-blue-100 group-hover:text-blue-600 transition-colors"><i class="ph-fill ph-buildings"></i></div>
+          <h3 class="text-xl font-bold text-slate-800">${area.name}</h3>
+          <p class="text-sm text-slate-500 mt-2">點擊進入管理</p>
+        </div>`).join('');
+    }
+
+    function renderDashboard() {
+      const area = DB.areas.find(a => a.id === STATE.areaId);
+      document.getElementById('dashboard-title').innerText = `${area.name} 管理中心`;
+    }
+
+    function renderGroupBoard() {
+      const grid = document.getElementById('group-grid');
+      const groups = DB.groups.filter(g => g.areaId === STATE.areaId);
+      let html = '';
+      groups.forEach(g => {
+        const leader = DB.staff.find(s => s.id === g.leaderId);
+        const staffCount = DB.staff.filter(s => s.groupId === g.id && s.role !== '組長').length;
+        const storeCount = DB.stores.filter(s => s.groupId === g.id).length;
+        html += `
+          <div onclick="openGroupModal('${g.id}')" class="bg-white p-5 rounded-xl shadow-sm border border-slate-200 hover:border-pink-400 cursor-pointer transition-all relative group">
+            <div class="absolute top-0 right-0 p-3 opacity-0 group-hover:opacity-100 transition-opacity"><i class="ph-fill ph-pencil-simple text-pink-500"></i></div>
+            <h3 class="text-lg font-bold text-pink-700 mb-2 border-b pb-2"><i class="ph-fill ph-tree-structure"></i> ${g.name}</h3>
+            <div class="space-y-1 text-sm text-slate-600">
+              <div class="flex justify-between"><span>組長:</span> <span class="font-bold text-slate-800">${leader ? leader.name : '未指派'}</span></div>
+              <div class="flex justify-between"><span>歸屬員工:</span> <span>${staffCount} 人</span></div>
+              <div class="flex justify-between"><span>歸屬店家:</span> <span>${storeCount} 間</span></div>
+            </div>
+          </div>
+        `;
+      });
+      grid.innerHTML = html;
+    }
+
+    function openGroupModal(id = null) {
+      document.getElementById('modal-group-title').innerText = id ? '編輯組別' : '新增組別';
+      const leaderSelect = document.getElementById('group-form-leader');
+      const staffListEl = document.getElementById('group-form-staff-list');
+      const storeListEl = document.getElementById('group-form-store-list');
+      
+      let lOpts = `<option value="">請選擇...</option>`;
+      DB.staff.filter(s => s.areaId === STATE.areaId && s.role === '組長').forEach(s => {
+        lOpts += `<option value="${s.id}">${s.name} (${s.empNo})</option>`;
+      });
+      leaderSelect.innerHTML = lOpts;
+
+      const allStaff = DB.staff.filter(s => s.areaId === STATE.areaId && s.role !== '組長');
+      const allStores = DB.stores.filter(s => s.areaId === STATE.areaId);
+      
+      let staffHtml = '', storeHtml = '';
+      allStaff.forEach(s => { staffHtml += `<label class="flex items-center gap-1 text-sm"><input type="checkbox" value="${s.id}" class="group-staff-cb"> ${s.name}</label>`; });
+      allStores.forEach(s => { storeHtml += `<label class="flex items-center gap-1 text-sm"><input type="checkbox" value="${s.id}" class="group-store-cb"> ${s.name}</label>`; });
+      staffListEl.innerHTML = staffHtml;
+      storeListEl.innerHTML = storeHtml;
+
+      if (id) {
+        const group = DB.groups.find(g => g.id === id);
+        document.getElementById('group-form-id').value = group.id;
+        document.getElementById('group-form-name').value = group.name;
+        leaderSelect.value = group.leaderId || '';
+        
+        allStaff.forEach(s => { if(s.groupId === id) document.querySelector(`.group-staff-cb[value="${s.id}"]`).checked = true; });
+        allStores.forEach(s => { if(s.groupId === id) document.querySelector(`.group-store-cb[value="${s.id}"]`).checked = true; });
+      } else {
+        document.getElementById('group-form-id').value = '';
+        document.getElementById('group-form-name').value = '';
+        leaderSelect.value = '';
+      }
+      document.getElementById('modal-group').classList.remove('hidden');
+      document.getElementById('modal-group').classList.add('flex');
+    }
+
+    function saveGroup() {
+      const id = document.getElementById('group-form-id').value;
+      const name = document.getElementById('group-form-name').value.trim();
+      const leaderId = document.getElementById('group-form-leader').value;
+      
+      if(!name) return showAlert("提示", "組別名稱必填");
+
+      let targetId = id;
+      if (id) {
+        let group = DB.groups.find(g => g.id === id);
+        group.name = name; group.leaderId = leaderId;
+      } else {
+        targetId = 'g_' + Date.now();
+        DB.groups.push({ id: targetId, name, leaderId, areaId: STATE.areaId });
+      }
+      
+      const checkedStaff = Array.from(document.querySelectorAll('.group-staff-cb:checked')).map(cb => cb.value);
+      const checkedStores = Array.from(document.querySelectorAll('.group-store-cb:checked')).map(cb => cb.value);
+      
+      // 修復：正確綁定員工與店家歸屬，並確保組長也連動
+      DB.staff.forEach(s => { if(s.groupId === targetId && !checkedStaff.includes(s.id) && s.id !== leaderId) s.groupId = null; });
+      DB.stores.forEach(s => { if(s.groupId === targetId && !checkedStores.includes(s.id)) s.groupId = null; });
+      
+      checkedStaff.forEach(sid => { DB.staff.find(s => s.id === sid).groupId = targetId; });
+      checkedStores.forEach(sid => { DB.stores.find(s => s.id === sid).groupId = targetId; });
+      
+      if (leaderId) {
+          const leader = DB.staff.find(s => s.id === leaderId);
+          if (leader) leader.groupId = targetId;
+      }
+
+      closeModal('modal-group');
+      renderGroupBoard();
+      showToast("組別設定已儲存");
+    }
+
+    function renderStaffBoard() {
+      const content = document.getElementById('staff-content');
+      const staffList = DB.staff.filter(s => s.areaId === STATE.areaId);
+      
+      if(STATE.tabs.staff === 'list') {
+        let html = '<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 content-start">';
+        html += staffList.map(staff => getStaffCardHtml(staff)).join('');
+        html += '</div>';
+        content.innerHTML = html;
+      } else {
+        const groups = DB.groups.filter(g => g.areaId === STATE.areaId);
+        let html = '';
+        groups.forEach(g => {
+          const leader = DB.staff.find(s => s.id === g.leaderId);
+          const members = DB.staff.filter(s => s.groupId === g.id && s.role !== '組長');
+          html += `<div class="mb-8">
+            <h3 class="text-xl font-bold bg-blue-100 text-blue-800 p-3 rounded-t-xl flex items-center gap-2"><i class="ph-fill ph-users-three"></i> ${g.name}</h3>
+            <div class="bg-white p-4 rounded-b-xl border border-t-0 border-blue-100 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 content-start">`;
+          if(leader) html += getStaffCardHtml(leader, true);
+          html += members.map(staff => getStaffCardHtml(staff)).join('');
+          html += `</div></div>`;
+        });
+        const unassigned = DB.staff.filter(s => s.areaId === STATE.areaId && !s.groupId);
+        if(unassigned.length > 0) {
+          html += `<div class="mb-8"><h3 class="text-xl font-bold bg-slate-200 text-slate-700 p-3 rounded-t-xl flex items-center gap-2"><i class="ph-fill ph-question"></i> 未歸屬組別</h3>
+                   <div class="bg-white p-4 rounded-b-xl border border-t-0 border-slate-200 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 content-start">`;
+          html += unassigned.map(staff => getStaffCardHtml(staff)).join('');
+          html += `</div></div>`;
+        }
+        content.innerHTML = html;
+      }
+    }
+
+    function getStaffCardHtml(staff, isLeaderStyle = false) {
+      const badge = staff.role === '組長' ? `<span class="px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded text-[10px]">組長</span>` : '';
+      const ring = isLeaderStyle ? 'ring-2 ring-amber-400' : '';
+      return `
+        <div onclick="openStaffModal('${staff.id}')" class="bg-white p-4 rounded-xl shadow-sm border border-slate-200 hover:border-blue-400 cursor-pointer transition-all relative overflow-hidden group ${ring}">
+          <div class="absolute top-0 right-0 p-2 opacity-0 group-hover:opacity-100 transition-opacity"><i class="ph-fill ph-pencil-simple text-blue-500"></i></div>
+          <div class="flex items-center gap-3 mb-3">
+            <div class="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-400 text-lg"><i class="ph-fill ph-user"></i></div>
+            <div>
+              <div class="font-bold text-slate-800 flex items-center gap-1">${staff.name} ${badge}</div>
+              <div class="text-xs text-slate-500 font-mono">${staff.empNo} | ${staff.role}</div>
+            </div>
+          </div>
+          <span class="inline-block px-2 py-0.5 rounded text-xs font-bold ${staff.status === '正常' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}">${staff.status}</span>
+        </div>`;
+    }
+
+    function renderStoreBoard() {
+      const content = document.getElementById('store-content');
+      const storeList = DB.stores.filter(s => s.areaId === STATE.areaId);
+      
+      if(STATE.tabs.store === 'list') {
+        let html = '<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 content-start">';
+        html += storeList.map(store => getStoreCardHtml(store)).join('');
+        html += '</div>';
+        content.innerHTML = html;
+      } else {
+        const groups = DB.groups.filter(g => g.areaId === STATE.areaId);
+        let html = '';
+        groups.forEach(g => {
+          const members = DB.stores.filter(s => s.groupId === g.id);
+          if(members.length === 0) return;
+          html += `<div class="mb-8">
+            <h3 class="text-xl font-bold bg-purple-100 text-purple-800 p-3 rounded-t-xl flex items-center gap-2"><i class="ph-fill ph-storefront"></i> ${g.name} 陣地</h3>
+            <div class="bg-white p-4 rounded-b-xl border border-t-0 border-purple-100 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 content-start">`;
+          html += members.map(store => getStoreCardHtml(store)).join('');
+          html += `</div></div>`;
+        });
+        const unassigned = DB.stores.filter(s => s.areaId === STATE.areaId && !s.groupId);
+        if(unassigned.length > 0) {
+          html += `<div class="mb-8"><h3 class="text-xl font-bold bg-slate-200 text-slate-700 p-3 rounded-t-xl flex items-center gap-2"><i class="ph-fill ph-question"></i> 未歸屬陣地</h3>
+                   <div class="bg-white p-4 rounded-b-xl border border-t-0 border-slate-200 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 content-start">`;
+          html += unassigned.map(store => getStoreCardHtml(store)).join('');
+          html += `</div></div>`;
+        }
+        content.innerHTML = html;
+      }
+    }
+
+    function getStoreCardHtml(store) {
+      return `
+        <div onclick="openStoreModal('${store.id}')" class="bg-white p-5 rounded-xl shadow-sm border border-slate-200 hover:border-purple-400 cursor-pointer transition-all relative group">
+           <div class="absolute top-0 right-0 p-3 opacity-0 group-hover:opacity-100 transition-opacity"><i class="ph-fill ph-pencil-simple text-purple-500"></i></div>
+           <div class="flex items-center gap-2 text-purple-700 font-bold mb-1"><i class="ph-fill ph-storefront"></i> ${store.name} <span class="text-[10px] bg-purple-100 text-purple-600 px-1 rounded">${store.brand || 'FL'}</span></div>
+           <div class="text-xs text-slate-400 font-mono mb-4 border-b pb-2">${store.storeNo || '-'}</div>
+           <div class="grid grid-cols-2 gap-y-2 text-sm">
+             <div class="text-slate-500">通路: <span class="text-slate-800 font-medium">${store.channel}</span></div>
+             <div class="text-slate-500">派員: <span class="text-slate-800 font-medium">${store.alloc}</span></div>
+             <div class="col-span-2 text-slate-500">時間: <span class="text-slate-800 font-medium">${store.hours || '未設定'}</span></div>
+             <div class="col-span-2 text-slate-500">業績: <span class="text-slate-800 font-medium">${store.target || '未設定'}</span></div>
+             <div class="col-span-2 text-slate-500">公休: <span class="text-slate-800 font-medium">${store.offDays.length > 0 ? store.offDays.join(',') : '無'}</span></div>
+           </div>
+        </div>`;
+    }
+
+    function renderAssignBoard() {
+      const mk = getMonthKey();
+      const stores = DB.stores.filter(s => s.areaId === STATE.areaId);
+      const areaAssigns = DB.assignments[mk][STATE.areaId];
+      const areaStaff = DB.staff.filter(s => s.areaId === STATE.areaId && !['離職', '外借'].includes(s.status));
+
+      const assignCounts = {};
+      areaStaff.forEach(s => assignCounts[s.id] = 0);
+      stores.forEach(store => {
+        const ids = areaAssigns[store.id] || [];
+        ids.forEach(id => { if(assignCounts[id] !== undefined) assignCounts[id]++; });
+      });
+
+      let storesHtml = '';
+      stores.forEach(store => {
+        if(!areaAssigns[store.id]) areaAssigns[store.id] = [];
+        const staffIds = areaAssigns[store.id];
+        const isFull = staffIds.length >= Math.ceil(store.alloc);
+        const headerColor = store.alloc >= 2 ? 'bg-blue-100 text-blue-800' : (store.alloc === 1.5 ? 'bg-purple-100 text-purple-800' : 'bg-orange-100 text-orange-800');
+
+        storesHtml += `
+          <div class="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col h-64 transition-all dropzone" 
+               ondragover="allowDrop(event)" ondrop="drop(event, '${store.id}')" id="zone-${store.id}">
+            <div class="${headerColor} p-3 font-bold flex justify-between items-center rounded-t-xl border-b">
+              <span class="flex items-center gap-1"><i class="ph-fill ph-storefront"></i> ${store.name}</span>
+              <span class="text-xs bg-white/50 px-2 py-0.5 rounded">派員: ${store.alloc}</span>
+            </div>
+            <div class="flex-1 p-3 flex flex-col gap-2 overflow-y-auto ${isFull ? 'bg-slate-50' : 'bg-slate-100/50'}">
+              ${staffIds.length === 0 ? '<div class="text-slate-400 text-sm text-center mt-6 border-2 border-dashed border-slate-300 rounded p-4">拖曳至此</div>' : ''}
+              ${staffIds.map((id, idx) => renderAssignedStaffCard(id, idx === 0 ? '主負責' : '支援', store.id)).join('')}
+            </div>
+          </div>
+        `;
+      });
+      document.getElementById('assign-stores-grid').innerHTML = storesHtml;
+
+      document.getElementById('unassigned-count').innerText = areaStaff.length;
+      let poolHtml = areaStaff.map(s => renderPoolStaffCard(s.id, assignCounts[s.id])).join('');
+      document.getElementById('pool-unassigned').innerHTML = poolHtml || '<div class="text-slate-400 text-sm text-center mt-4">無可用人員</div>';
+    }
+
+    function renderPoolStaffCard(staffId, count) {
+      const staff = DB.staff.find(s => s.id === staffId);
+      if(!staff) return '';
+      const statusAlert = staff.status !== '正常' ? `<span class="text-[10px] text-red-600 bg-red-100 px-1 rounded ml-1">${staff.status}</span>` : '';
+      const countBadge = count > 0 
+        ? `<span class="text-[10px] bg-blue-500 text-white px-1.5 py-0.5 rounded shadow-sm">${count} 店</span>` 
+        : `<span class="text-[10px] bg-slate-400 text-white px-1.5 py-0.5 rounded shadow-sm">未指派</span>`;
+
+      return `
+        <div class="staff-card bg-white border border-slate-200 p-2 rounded-lg shadow-sm flex justify-between items-center hover:border-blue-400"
+             draggable="true" ondragstart="drag(event, '${staffId}', 'pool')">
+          <div class="flex items-center gap-2">
+            <div class="w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center text-slate-500 text-xs"><i class="ph-fill ph-user"></i></div>
+            <div class="text-sm font-bold text-slate-700">${staff.name} ${statusAlert}</div>
+          </div>
+          ${countBadge}
+        </div>
+      `;
+    }
+
+    function renderAssignedStaffCard(staffId, tagStr, storeId) {
+      const staff = DB.staff.find(s => s.id === staffId);
+      if(!staff) return '';
+      const statusAlert = staff.status !== '正常' ? `<span class="text-[10px] text-red-600 bg-red-100 px-1 rounded ml-1">${staff.status}</span>` : '';
+      const tagColor = tagStr === '主負責' ? 'bg-blue-500' : 'bg-emerald-500';
+
+      return `
+        <div class="staff-card bg-white border border-slate-200 p-2 rounded-lg shadow-sm flex justify-between items-center hover:border-blue-400 group"
+             draggable="true" ondragstart="drag(event, '${staffId}', '${storeId}')">
+          <div class="flex items-center gap-2">
+            <div class="w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center text-slate-500 text-xs"><i class="ph-fill ph-user"></i></div>
+            <div class="text-sm font-bold text-slate-700">${staff.name} ${statusAlert}</div>
+          </div>
+          <div class="flex items-center gap-1">
+            <span class="text-[10px] text-white ${tagColor} px-1.5 py-0.5 rounded shadow-sm">${tagStr}</span>
+            <button onclick="removeAssignment('${storeId}', '${staffId}')" class="text-slate-300 hover:text-red-500 p-1 opacity-0 group-hover:opacity-100 transition-opacity" title="移除指派"><i class="ph-bold ph-x"></i></button>
+          </div>
+        </div>
+      `;
+    }
+
+    function removeAssignment(storeId, staffId) {
+      const mk = getMonthKey();
+      const areaAssigns = DB.assignments[mk][STATE.areaId];
+      if(areaAssigns[storeId]) {
+        areaAssigns[storeId] = areaAssigns[storeId].filter(id => id !== staffId);
+        renderAssignBoard();
+      }
+    }
+
+    function allowDrop(ev) {
+      ev.preventDefault();
+      document.querySelectorAll('.dropzone').forEach(z => z.classList.remove('dragover'));
+      const dropzone = ev.target.closest('.dropzone');
+      if(dropzone) dropzone.classList.add('dragover');
+    }
+
+    let dragSourceZone = null;
+    function drag(ev, staffId, sourceZone) {
+      ev.dataTransfer.setData("staffId", staffId);
+      STATE.draggedStaffId = staffId;
+      dragSourceZone = sourceZone;
+      setTimeout(() => ev.target.classList.add('dragging'), 0);
+    }
+
+    function drop(ev, targetZoneId) {
+      ev.preventDefault();
+      document.querySelectorAll('.dropzone').forEach(z => z.classList.remove('dragover', 'dragging'));
+      const staffId = ev.dataTransfer.getData("staffId") || STATE.draggedStaffId;
+      if (!staffId || dragSourceZone === targetZoneId) return;
+
+      const mk = getMonthKey();
+      const areaAssigns = DB.assignments[mk][STATE.areaId];
+      
+      if (targetZoneId === 'pool') {
+         if (dragSourceZone !== 'pool' && areaAssigns[dragSourceZone]) {
+            areaAssigns[dragSourceZone] = areaAssigns[dragSourceZone].filter(id => id !== staffId);
+         }
+         renderAssignBoard();
+         return;
+      }
+
+      if (dragSourceZone !== 'pool' && areaAssigns[dragSourceZone]) {
+        areaAssigns[dragSourceZone] = areaAssigns[dragSourceZone].filter(id => id !== staffId);
+      }
+
+      if (!areaAssigns[targetZoneId]) areaAssigns[targetZoneId] = [];
+      if (areaAssigns[targetZoneId].includes(staffId)) {
+         showToast("該人員已經在此店家陣地中！", "ph-warning");
+         return;
+      }
+      areaAssigns[targetZoneId].push(staffId);
+      renderAssignBoard();
+    }
+
+    function runAutoSchedule() {
+      showToast("🚀 正在產生排班草稿...", "ph-spinner-gap animate-spin");
+      
+      setTimeout(() => {
+        const mk = getMonthKey();
+        const areaStaff = DB.staff.filter(s => s.areaId === STATE.areaId);
+        const areaStores = DB.stores.filter(s => s.areaId === STATE.areaId);
+        const areaAssigns = DB.assignments[mk][STATE.areaId];
+        
+        if(!DB.schedules[mk]) DB.schedules[mk] = {};
+
+        // 1. 初始化，填寫特殊狀態 (組長不排班)
+        areaStaff.forEach(s => {
+           if(!DB.schedules[mk][s.id]) DB.schedules[mk][s.id] = {};
+           
+           if(s.role === '組長') return; 
+           
+           for(let d=1; d<=STATE.daysInMonth; d++) {
+             if(!['特休','病假','育嬰假'].includes(DB.schedules[mk][s.id][d])) {
+               DB.schedules[mk][s.id][d] = '';
+             }
+           }
+           if (s.status !== '正常') {
+             const code = s.status === '病假' ? '病' : (s.status === '育嬰假' ? '育嬰' : '外借');
+             for(let d=1; d<=STATE.daysInMonth; d++) DB.schedules[mk][s.id][d] = code;
+           }
+        });
+
+        // 2. 鋪排公休 (嚴格對齊 14 天雙週週期)
+        areaStaff.filter(s => s.status === '正常' && s.role !== '組長').forEach(staff => {
+          let shiftOffset = staff.id.length % 3; 
+          for(let d=1; d<=STATE.daysInMonth; d++) {
+             const dayInCycle = getDayInCycle(STATE.year, STATE.month, d);
+             let off1 = (3 + shiftOffset) % 14;
+             let off2 = (9 + shiftOffset) % 14;
+             if (dayInCycle === off1 || dayInCycle === off2) {
+                 if(DB.schedules[mk][staff.id][d] === '') DB.schedules[mk][staff.id][d] = 'X'; 
+             }
+          }
+        });
+
+        // 3. A/P/O 排班 (防跨店撞期)
+        for(let d=1; d<=STATE.daysInMonth; d++) {
+          const dateObj = new Date(STATE.year, STATE.month - 1, d);
+          const weekDay = ['日','一','二','三','四','五','六'][dateObj.getDay()];
+
+          areaStores.forEach(store => {
+            const assignedIds = areaAssigns[store.id] || [];
+            let activeStaff = assignedIds.filter(id => {
+              const s = DB.staff.find(x => x.id === id);
+              return s && s.status === '正常' && s.role !== '組長' && DB.schedules[mk][id][d] === '';
+            });
+
+            if (store.offDays.includes(weekDay)) {
+               assignedIds.forEach(id => { 
+                 if(DB.schedules[mk][id] && DB.schedules[mk][id][d] === '') DB.schedules[mk][id][d] = 'X'; 
+               });
+               return; 
+            }
+
+            if (store.alloc >= 2) {
+              if (activeStaff.length >= 2) {
+                DB.schedules[mk][activeStaff[0]][d] = 'A';
+                DB.schedules[mk][activeStaff[1]][d] = 'P';
+                if(activeStaff[2]) DB.schedules[mk][activeStaff[2]][d] = 'O';
+              } else if (activeStaff.length === 1) {
+                DB.schedules[mk][activeStaff[0]][d] = 'O';
+              }
+            } else if (store.alloc === 1.5) {
+              if (activeStaff.length > 0) {
+                const isPrimary = activeStaff[0] === assignedIds[0];
+                DB.schedules[mk][activeStaff[0]][d] = isPrimary ? 'O' : 'O(代)';
+              }
+            } else if (store.alloc <= 1) {
+              if (activeStaff.length > 0) {
+                DB.schedules[mk][activeStaff[0]][d] = store.name.includes('巴斯') ? 'P' : 'A';
+              }
+            }
+          });
+        }
+        
+        navigateTo('schedule');
+        showToast("✅ 排班草稿建立完成！");
+      }, 300);
+    }
+
+    function renderScheduleTable() {
+      const mk = getMonthKey();
+      const content = document.getElementById('schedule-content');
+      const tab = STATE.tabs.schedule;
+      
+      let targetStaff = [];
+      let groupLeaderId = null;
+
+      if(tab === 'all') {
+        targetStaff = DB.staff.filter(s => s.areaId === STATE.areaId);
+      } else if(tab === 'leader') {
+        const filterVal = document.getElementById('schedule-leader-filter').value;
+        if(filterVal) {
+          const group = DB.groups.find(g => g.id === filterVal);
+          if(group) {
+             groupLeaderId = group.leaderId;
+             // 修復：正確包含組長與組員
+             targetStaff = DB.staff.filter(s => s.groupId === filterVal || s.id === groupLeaderId);
+             targetStaff = [...new Set(targetStaff)]; // 過濾重複
+             targetStaff.sort((a,b) => (a.id === groupLeaderId ? -1 : (b.id === groupLeaderId ? 1 : 0)));
+          }
+        } else {
+          content.innerHTML = '<div class="text-center text-slate-500 mt-10">請從上方下拉選單選擇組別</div>';
+          return;
+        }
+      } else if(tab === 'staff') {
+        targetStaff = DB.staff.filter(s => s.areaId === STATE.areaId);
+        targetStaff.sort((a, b) => parseInt(a.empNo) - parseInt(b.empNo));
+      } else if(tab === 'store') {
+        renderScheduleByStore(mk);
+        return;
+      }
+
+      content.innerHTML = `<table class="w-full text-center border-collapse text-sm">${generateTableHeader()}<tbody>${targetStaff.map(s => generateStaffRow(s, mk, s.id === groupLeaderId)).join('')}</tbody></table>`;
+    }
+
+    function renderScheduleByStore(mk) {
+      const content = document.getElementById('schedule-content');
+      const stores = DB.stores.filter(s => s.areaId === STATE.areaId);
+      const areaAssigns = DB.assignments[mk] ? DB.assignments[mk][STATE.areaId] : {};
+      
+      let html = `<table class="w-full text-center border-collapse text-sm">${generateTableHeader()}<tbody>`;
+      stores.forEach(store => {
+         const assignedIds = areaAssigns[store.id] || [];
+         if(assignedIds.length === 0) return;
+         
+         html += `<tr><td colspan="${STATE.daysInMonth + 1}" class="bg-purple-100 text-purple-800 font-bold text-left p-2 border-y border-purple-200"><i class="ph-fill ph-storefront"></i> ${store.name}</td></tr>`;
+         assignedIds.forEach(sid => {
+            const staff = DB.staff.find(s => s.id === sid);
+            if(staff) html += generateStaffRow(staff, mk, false, true); 
+         });
+      });
+      html += `</tbody></table>`;
+      content.innerHTML = html;
+    }
+
+    function generateTableHeader() {
+      let html = `<thead><tr><th class="p-3 border-b border-r min-w-[140px] text-left">人員</th>`;
+      for(let d=1; d<=STATE.daysInMonth; d++) {
+        const dateObj = new Date(STATE.year, STATE.month - 1, d);
+        const weekDay = ['日','一','二','三','四','五','六'][dateObj.getDay()];
+        const isWeekend = weekDay === '六' || weekDay === '日';
+        const dayInCycle = getDayInCycle(STATE.year, STATE.month, d);
+        const isBiWeeklyEnd = (dayInCycle === 13);
+        const borderClass = isBiWeeklyEnd ? 'border-biweekly z-20 relative' : 'border-r border-slate-200';
+        html += `<th class="p-1.5 border-b min-w-[36px] ${borderClass} ${isWeekend ? 'bg-red-50 text-red-600' : ''}">
+                  <div class="text-sm">${d}</div><div class="text-[10px] font-normal">${weekDay}</div>
+                 </th>`;
+      }
+      html += `</tr></thead>`;
+      return html;
+    }
+
+    function generateStaffRow(staff, mk, isLeader = false, isStoreView = false) {
+      let storeNames = [];
+      const areaAssigns = DB.assignments[mk] ? DB.assignments[mk][STATE.areaId] : {};
+      for(let storeId in areaAssigns) {
+        if(areaAssigns[storeId].includes(staff.id)) {
+          const st = DB.stores.find(x => x.id === storeId);
+          if(st) storeNames.push(st.name);
+        }
+      }
+      let storeNameStr = storeNames.length > 0 ? storeNames.join(', ') : '未指派';
+      if(isStoreView) storeNameStr = ''; 
+      
+      const statusAlert = staff.status !== '正常' ? `<span class="text-red-500 font-bold ml-1">(${staff.status})</span>` : '';
+      const leaderBg = isLeader ? 'bg-amber-50' : 'hover:bg-slate-50';
+
+      let html = `<tr class="${leaderBg} border-b">
+        <td class="p-2 border-r text-left">
+          <div class="font-bold text-slate-800">${staff.name} ${statusAlert}</div>
+          <div class="text-[10px] text-blue-600 mt-0.5">${storeNameStr ? `<i class="ph-fill ph-storefront"></i> ${storeNameStr}` : `<span class="text-slate-400 font-mono">${staff.empNo}</span>`}</div>
+        </td>`;
+
+      for(let d=1; d<=STATE.daysInMonth; d++) {
+        const shift = (DB.schedules[mk] && DB.schedules[mk][staff.id] && DB.schedules[mk][staff.id][d]) ? DB.schedules[mk][staff.id][d] : '';
+        let cellClass = 'shift-None';
+        if(shift === 'X') cellClass = 'shift-X';
+        else if(shift === 'A') cellClass = 'shift-A';
+        else if(shift === 'P') cellClass = 'shift-P';
+        else if(shift === 'O') cellClass = 'shift-O';
+        else if(shift === '特休') cellClass = 'shift-Leave';
+        else if(shift.includes('代')) cellClass = 'shift-Support';
+        else if(['病','育嬰','外借'].includes(shift)) cellClass = 'bg-slate-200 text-slate-500 cursor-not-allowed';
+
+        const dayInCycle = getDayInCycle(STATE.year, STATE.month, d);
+        const isBiWeeklyEnd = (dayInCycle === 13);
+        const borderClass = isBiWeeklyEnd ? 'border-biweekly' : 'border-r border-slate-100';
+
+        html += `
+          <td class="p-1 ${borderClass}">
+            <div onclick="toggleShift('${staff.id}', ${d})" 
+                 class="shift-cell w-full h-8 flex items-center justify-center rounded text-sm font-medium ${cellClass}">
+              ${shift}
+            </div>
+          </td>`;
+      }
+      html += `</tr>`;
+      return html;
+    }
+
+    function toggleShift(staffId, day) {
+      const mk = getMonthKey();
+      const staff = DB.staff.find(s => s.id === staffId);
+      if(staff.status !== '正常') return; 
+
+      // 🛑 防呆機制：如果該月或該員工的班表物件還沒建立，先安全幫他建一個空物件
+      if (!DB.schedules[mk]) DB.schedules[mk] = {};
+      if (!DB.schedules[mk][staffId]) DB.schedules[mk][staffId] = {};
+
+      const shifts = ['', 'A', 'P', 'O', 'X', '特休', 'O(代)', 'P(代)'];
+      const current = DB.schedules[mk][staffId][day] || '';
+      const nextIndex = (shifts.indexOf(current) + 1) % shifts.length;
+      DB.schedules[mk][staffId][day] = shifts[nextIndex];
+      renderScheduleTable();
+    }
+
+    function clearSchedule() {
+      showConfirm('確認清除重排', '確定要清除目前的排班草稿嗎？\n\n(註：已標記的「特休、病、育嬰假」等將會被保留)', () => {
+        const mk = getMonthKey();
+        const areaStaff = DB.staff.filter(s => s.areaId === STATE.areaId);
+        if (!DB.schedules[mk]) DB.schedules[mk] = {};
+        areaStaff.forEach(s => {
+          if (!DB.schedules[mk][s.id]) DB.schedules[mk][s.id] = {};
+          for(let d = 1; d <= STATE.daysInMonth; d++) {
+            const currentShift = DB.schedules[mk][s.id][d] || '';
+            if (!['特休', '病', '育嬰', '外借'].includes(currentShift)) {
+              DB.schedules[mk][s.id][d] = '';
+            }
+          }
+        });
+        renderScheduleTable();
+        showToast("已清除 A/P/O/X 班別", "ph-trash");
+      });
+    }
+
+    function openStaffModal(id = null) {
+      document.getElementById('modal-staff-title').innerText = id ? '編輯人員資訊' : '新增人員';
+      if (id) {
+        const staff = DB.staff.find(s => s.id === id);
+        document.getElementById('staff-form-id').value = staff.id;
+        document.getElementById('staff-form-empNo').value = staff.empNo;
+        document.getElementById('staff-form-name').value = staff.name;
+        document.getElementById('staff-form-role').value = staff.role || '員工';
+        document.getElementById('staff-form-status').value = staff.status;
+      } else {
+        document.getElementById('staff-form-id').value = '';
+        document.getElementById('staff-form-empNo').value = '';
+        document.getElementById('staff-form-name').value = '';
+        document.getElementById('staff-form-role').value = '員工';
+        document.getElementById('staff-form-status').value = '正常';
+      }
+      document.getElementById('modal-staff').classList.remove('hidden');
+      document.getElementById('modal-staff').classList.add('flex');
+    }
+
+    function saveStaff() {
+      const id = document.getElementById('staff-form-id').value;
+      const empNo = document.getElementById('staff-form-empNo').value.trim();
+      const name = document.getElementById('staff-form-name').value.trim();
+      const role = document.getElementById('staff-form-role').value;
+      const status = document.getElementById('staff-form-status').value;
+      
+      if(!empNo || !name) return showAlert("提示", "工號與姓名必填");
+
+      if (id) {
+        let staff = DB.staff.find(s => s.id === id);
+        staff.empNo = empNo; staff.name = name; staff.role = role; staff.status = status;
+        showToast("人員資訊已更新");
+      } else {
+        const newId = 's_' + Date.now();
+        DB.staff.push({ id: newId, empNo, name, role, status, areaId: STATE.areaId });
+        showToast("新增人員成功");
+      }
+      closeModal('modal-staff');
+      if(STATE.view === 'staff') renderStaffBoard();
+      else if(STATE.view === 'assign') renderAssignBoard();
+    }
+
+    function openStoreModal(id = null) {
+      document.getElementById('modal-store-title').innerText = id ? '編輯店家資訊' : '新增店家';
+      document.querySelectorAll('.offday-cb').forEach(cb => cb.checked = false);
+
+      if (id) {
+        const store = DB.stores.find(s => s.id === id);
+        document.getElementById('store-form-id').value = store.id;
+        document.getElementById('store-form-no').value = store.storeNo || '';
+        document.getElementById('store-form-name').value = store.name;
+        document.getElementById('store-form-brand').value = store.brand || 'FL';
+        document.getElementById('store-form-channel').value = store.channel;
+        document.getElementById('store-form-alloc').value = store.alloc;
+        document.getElementById('store-form-hours').value = store.hours || '';
+        if(store.offDays) {
+            store.offDays.forEach(day => {
+               const cb = document.querySelector(`.offday-cb[value="${day}"]`);
+               if(cb) cb.checked = true;
+            });
+        }
+      } else {
+        document.getElementById('store-form-id').value = '';
+        document.getElementById('store-form-no').value = '';
+        document.getElementById('store-form-name').value = '';
+        document.getElementById('store-form-brand').value = 'FL';
+        document.getElementById('store-form-channel').value = '百貨';
+        document.getElementById('store-form-alloc').value = '1';
+        document.getElementById('store-form-hours').value = '';
+      }
+      document.getElementById('modal-store').classList.remove('hidden');
+      document.getElementById('modal-store').classList.add('flex');
+    }
+
+    function saveStore() {
+      const id = document.getElementById('store-form-id').value;
+      const storeNo = document.getElementById('store-form-no').value.trim();
+      const name = document.getElementById('store-form-name').value.trim();
+      const brand = document.getElementById('store-form-brand').value;
+      const channel = document.getElementById('store-form-channel').value;
+      const hours = document.getElementById('store-form-hours').value.trim();
+      const alloc = parseFloat(document.getElementById('store-form-alloc').value);
+      const offDays = Array.from(document.querySelectorAll('.offday-cb:checked')).map(cb => cb.value);
+
+      if(!storeNo || !name || isNaN(alloc)) return showAlert("提示", "欄位填寫不完整");
+
+      if (id) {
+        let store = DB.stores.find(s => s.id === id);
+        store.storeNo = storeNo; store.name = name; store.brand = brand; store.channel = channel; 
+        store.hours = hours; store.alloc = alloc; store.offDays = offDays;
+        showToast("店家資訊已更新");
+      } else {
+        const newId = 'st_' + Date.now();
+        DB.stores.push({ id: newId, storeNo, name, brand, channel, hours, alloc, offDays, areaId: STATE.areaId });
+        showToast("新增店家成功");
+      }
+      closeModal('modal-store');
+      renderStoreBoard();
+    }
+
+    function closeModal(modalId) {
+      document.getElementById(modalId).classList.add('hidden');
+      document.getElementById(modalId).classList.remove('flex');
+    }
+
+    function exportExcel() {
+      showToast("正在產生 Excel...", "ph-spinner-gap animate-spin");
+      setTimeout(() => {
+        const mk = getMonthKey();
+        const ws_data = [];
+        const header = ['工號', '姓名', '負責店點 (多店)'];
+        for(let d=1; d<=STATE.daysInMonth; d++) header.push(`${d}號`);
+        ws_data.push(header);
+
+        const staffList = DB.staff.filter(s => s.areaId === STATE.areaId);
+        // 優化：匯出 Excel 自動依工號排序
+        staffList.sort((a, b) => parseInt(a.empNo) - parseInt(b.empNo));
+        
+        staffList.forEach(s => {
+          let storeNames = [];
+          const areaAssigns = DB.assignments[mk] ? DB.assignments[mk][STATE.areaId] : {};
+          for(let storeId in areaAssigns) {
+            if(areaAssigns[storeId].includes(s.id) && storeId !== 'unassigned') {
+              const st = DB.stores.find(x => x.id === storeId);
+              if(st) storeNames.push(st.name);
+            }
+          }
+          const storeNameStr = storeNames.length > 0 ? storeNames.join(', ') : '未指派';
+
+          const row = [s.empNo, s.name, storeNameStr];
+          for(let d=1; d<=STATE.daysInMonth; d++) {
+             row.push((DB.schedules[mk] && DB.schedules[mk][s.id] && DB.schedules[mk][s.id][d]) ? DB.schedules[mk][s.id][d] : '');
+          }
+          ws_data.push(row);
+        });
+
+        const ws = XLSX.utils.aoa_to_sheet(ws_data);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "排班表");
+        
+        const area = DB.areas.find(a => a.id === STATE.areaId);
+        XLSX.writeFile(wb, `${area.name}_${mk}排班.xlsx`);
+      }, 500);
+    }
+
+    // 系統啟動
+    window.onload = () => navigateTo('areas');
+  </script>
+</body>
+</html>
